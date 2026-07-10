@@ -486,6 +486,77 @@ def main():
     size = os.path.getsize(OUT_PATH) / 1024 / 1024
     print(f"✅ 완료 — {len(results):,}종목 / 스크리너 {size:.1f}MB / 차트 파일 {len(charts):,}개 → data/", flush=True)
 
+    build_patterns(charts, base_date)
+
+
+def build_patterns(charts, base_date):
+    """🆕 [VOL24] 패턴 유사 검색용 장기 구간 벡터 — 종목별 120봉/250봉(1년)/760봉(3년)/
+    상장 이후 전체 종가를 60포인트로 압축(첫 값=1000 정규화)해 patterns.json 한 파일로 저장.
+    '전체'는 백필(charts_hist)이 완료된 종목만 상장 이후 전 구간이고, 아니면 보유분 전체예요."""
+    data_dir = os.path.dirname(OUT_PATH)
+    hist_dir = os.path.join(data_dir, "charts_hist")
+
+    def downsample60(arr):
+        n = len(arr)
+        if n < 2:
+            return None
+        out = []
+        for i in range(60):
+            t = i * (n - 1) / 59.0
+            lo = int(t)
+            hi2 = min(n - 1, lo + 1)
+            f = t - lo
+            out.append(arr[lo] * (1 - f) + arr[hi2] * f)
+        base = out[0] or 1
+        return [max(1, int(round(x / base * 1000))) for x in out]
+
+    windows = [("w120", 120), ("w250", 250), ("w760", 760)]
+    stocks_out = {}
+    full_cnt = 0
+    for code, ch in charts.items():
+        c = ch.get("c") or []
+        d = ch.get("d") or []
+        entry = {}
+        for key, bars in windows:
+            if len(c) >= bars:
+                vec = downsample60(c[-bars:])
+                if vec:
+                    entry[key] = vec
+        # 전체(상장 이후): 백필 과거분과 날짜 기준 병합
+        full_c, complete = c, False
+        hp = os.path.join(hist_dir, f"{code}.json")
+        if d and os.path.exists(hp):
+            try:
+                with open(hp, encoding="utf-8") as fp:
+                    hj = json.load(fp)
+                hd, hc = hj.get("d") or [], hj.get("c") or []
+                first_roll = d[0]
+                cut = len(hd)
+                while cut > 0 and hd[cut - 1] >= first_roll:
+                    cut -= 1
+                full_c = hc[:cut] + c
+                complete = bool(hj.get("complete"))
+            except Exception:
+                pass
+        vec = downsample60(full_c)
+        if vec:
+            entry["full"] = vec
+            entry["fullBars"] = len(full_c)
+            entry["fullDone"] = complete
+            if complete:
+                full_cnt += 1
+        if entry:
+            stocks_out[code] = entry
+
+    out = {"baseDate": base_date, "points": 60,
+           "windows": {"w120": 120, "w250": 250, "w760": 760, "full": None},
+           "stocks": stocks_out}
+    path = os.path.join(data_dir, "patterns.json")
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(out, fp, ensure_ascii=False, separators=(",", ":"))
+    print(f"🧬 patterns.json 저장 — {len(stocks_out):,}종목 "
+          f"(전체구간 백필완료 {full_cnt:,}종목 포함) / {os.path.getsize(path)/1024/1024:.1f}MB", flush=True)
+
 
 if __name__ == "__main__":
     main()
