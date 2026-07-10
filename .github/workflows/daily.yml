@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: stockcatcher-data
+  cancel-in-progress: false
+
 jobs:
   collect:
     runs-on: ubuntu-latest
@@ -34,5 +38,12 @@ jobs:
           git config user.name "stockcatcher-bot"
           git config user.email "bot@users.noreply.github.com"
           git add data/screener.json data/charts
-          git diff --cached --quiet && echo "변경 없음(휴장일 가능성)" || git commit -m "data: $(date +'%Y-%m-%d') 스크리너 데이터 갱신"
-          git push
+          if git diff --cached --quiet; then
+            echo "변경 없음(휴장일 가능성)"
+            exit 0
+          fi
+          git commit -m "data: $(date +'%Y-%m-%d') 스크리너 데이터 갱신"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push && break
+            echo "푸시 재시도 $i/3"; sleep 5
+          done
