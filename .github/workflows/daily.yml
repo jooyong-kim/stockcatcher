@@ -43,7 +43,7 @@ jobs:
         run: |
           git config user.name "stockcatcher-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add data/screener.json data/charts data/flows.json
+          git add data/screener.json data/charts data/flows.json data/flows_detail
           if git diff --cached --quiet; then
             echo "변경 없음(휴장일 가능성)"
             exit 0
