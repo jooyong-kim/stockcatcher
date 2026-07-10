@@ -36,13 +36,16 @@ INVESTORS = [("frg", "외국인", "외국인"),
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_PATH = os.path.join(BASE_DIR, "data", "flows.json")
+DETAIL_DAYS = 120
+DETAIL_DIR = os.path.join(BASE_DIR, "data", "flows_detail")
+META_PATH = os.path.join(DETAIL_DIR, "_meta.json")
 
 
 def log(msg):
     print(msg, flush=True)
 
 
-def trading_dates(back_days=140):
+def trading_dates(back_days=210):
     """삼성전자 일봉으로 최근 거래일 목록 확보 (호출 1회)"""
     end = datetime.datetime.now()
     start = end - datetime.timedelta(days=back_days)
@@ -59,6 +62,94 @@ def fetch_retry(fn, *args, **kwargs):
             log(f"    재시도 {attempt+1}/3: {e}")
             time.sleep(2 + attempt * 3)
     return None
+
+
+def collect_detail(dates_all):
+    """🆕 [VOL22] 종목별 투자자 수급 추이 — 최근 DETAIL_DAYS 거래일 일자별 순매수.
+    첫 실행만 전 기간 수집(투자자3×시장2×일수 호출), 이후엔 새 거래일만 증분 수집."""
+    window = dates_all[-DETAIL_DAYS:]
+    meta = {"dates": []}
+    if os.path.exists(META_PATH):
+        try:
+            with open(META_PATH, encoding="utf-8") as fp:
+                meta = json.load(fp)
+        except Exception:
+            pass
+    have = [d for d in meta.get("dates", []) if d in window]
+    missing = [d for d in window if d not in have]
+    if not missing:
+        log("  수급 추이: 새 거래일 없음 — 건너뜀")
+        return
+    est = len(missing) * len(INVESTORS) * 2
+    log(f"  수급 추이 수집: 신규 {len(missing)}거래일 × 투자자3 × 시장2 = {est}콜 "
+        f"(예상 약 {est*(SLEEP+0.8)/60:.0f}분)")
+
+    day_data = {}
+    for d in missing:
+        per_inv = {}
+        for ikey, iname, _ in INVESTORS:
+            per = {}
+            for mkt in ("KOSPI", "KOSDAQ"):
+                df = fetch_retry(stock.get_market_net_purchases_of_equities_by_ticker,
+                                 d, d, mkt, iname)
+                time.sleep(SLEEP)
+                if df is None or df.empty:
+                    continue
+                df = df.reset_index()
+                code_col = "티커" if "티커" in df.columns else df.columns[0]
+                for _, r in df.iterrows():
+                    try:
+                        per[str(r[code_col])] = per.get(str(r[code_col]), 0) + int(r["순매수거래대금"])
+                    except Exception:
+                        continue
+            per_inv[ikey] = per
+        day_data[d] = per_inv
+        if len(day_data) % 10 == 0 or d == missing[-1]:
+            log(f"    {len(day_data)}/{len(missing)}일 완료 (~{d})")
+
+    # 유니버스: screener 종목 (스코어 대상과 동일)
+    codes = []
+    scr = os.path.join(BASE_DIR, "data", "screener.json")
+    if os.path.exists(scr):
+        try:
+            with open(scr, encoding="utf-8") as fp:
+                codes = [s["code"] for s in json.load(fp).get("stocks", [])]
+        except Exception:
+            pass
+    if not codes:
+        seen = set()
+        for d in day_data.values():
+            for per in d.values():
+                seen.update(per.keys())
+        codes = sorted(seen)
+
+    os.makedirs(DETAIL_DIR, exist_ok=True)
+    for code in codes:
+        path = os.path.join(DETAIL_DIR, f"{code}.json")
+        old = {}
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as fp:
+                    j = json.load(fp)
+                for i2, d in enumerate(j.get("d", [])):
+                    old[d] = (j["frg"][i2], j["inst"][i2], j["pension"][i2])
+            except Exception:
+                old = {}
+        for d in missing:
+            dd = day_data.get(d, {})
+            old[d] = (dd.get("frg", {}).get(code, 0),
+                      dd.get("inst", {}).get(code, 0),
+                      dd.get("pension", {}).get(code, 0))
+        out = {"d": window,
+               "frg": [old.get(d, (0, 0, 0))[0] for d in window],
+               "inst": [old.get(d, (0, 0, 0))[1] for d in window],
+               "pension": [old.get(d, (0, 0, 0))[2] for d in window]}
+        with open(path, "w", encoding="utf-8") as fp:
+            json.dump(out, fp, ensure_ascii=False, separators=(",", ":"))
+    with open(META_PATH, "w", encoding="utf-8") as fp:
+        json.dump({"dates": window,
+                   "updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, fp)
+    log(f"  수급 추이 저장: {len(codes)}종목 × {len(window)}거래일")
 
 
 def main():
@@ -168,7 +259,9 @@ def main():
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     with open(OUT_PATH, "w", encoding="utf-8") as fp:
         json.dump(out, fp, ensure_ascii=False, separators=(",", ":"))
-    log(f"🏁 flows.json 저장 완료 ({os.path.getsize(OUT_PATH)/1024:.0f}KB)")
+    log(f"  flows.json 저장 완료 ({os.path.getsize(OUT_PATH)/1024:.0f}KB)")
+    collect_detail(dates)
+    log("🏁 수급 수집 전체 완료")
 
 
 if __name__ == "__main__":
