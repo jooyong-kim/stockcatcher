@@ -1,0 +1,37 @@
+name: 스톡캐쳐 지표 연구
+
+on:
+  schedule:
+    - cron: "0 16 * * 6"   # 매주 토요일 01:00 KST
+  workflow_dispatch:
+    inputs:
+      min_n:
+        description: "신호 최소 표본수"
+        default: "300"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stockcatcher-data
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 지표 연구 실행
+        run: python pipeline/research_signals.py --min-n "${{ github.event.inputs.min_n || '300' }}"
+      - name: 결과 커밋
+        run: |
+          git config user.name "stockcatcher-bot"
+          git config user.email "bot@stockcatcher"
+          git add data/research_report.json || true
+          if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
+          git commit -m "🔬 지표 연구 리포트 갱신 ($(date +'%Y-%m-%d' -d '+9 hours'))"
+          for i in 1 2 3; do git pull --rebase origin main && git push && break; echo "재시도 $i"; sleep 5; done
